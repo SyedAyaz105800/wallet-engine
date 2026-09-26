@@ -14,6 +14,8 @@ import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import com.ayaz.wallet.dto.TransactionEvent;
+import java.time.LocalDateTime;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -27,6 +29,7 @@ public class WalletService {
     private final WalletRepository walletRepository;
     private final TransactionRepository transactionRepository;
     private final RedisTemplate<String, String> redisTemplate;
+    private final KafkaProducerService kafkaProducerService;
 
     private static final String IDEMPOTENCY_PREFIX = "idempotency:";
     private static final Duration IDEMPOTENCY_TTL = Duration.ofHours(24);
@@ -136,6 +139,7 @@ public class WalletService {
         rollbackTxn.setStatus(TransactionStatus.SUCCESS);
         rollbackTxn.setReferenceId(originalIdempotencyKey);
         transactionRepository.save(rollbackTxn);
+        publishEvent(rollbackTxn);
 
         log.info("Rollback successful for txn: {}", originalIdempotencyKey);
         return buildResponseFromTransaction(rollbackTxn, "Rollback successful");
@@ -192,6 +196,7 @@ public class WalletService {
         txn.setBalanceAfter(balanceAfter);
         txn.setStatus(TransactionStatus.SUCCESS);
         transactionRepository.save(txn);
+        publishEvent(txn);
 
         // Cache in Redis so next duplicate is caught instantly
         String redisKey = IDEMPOTENCY_PREFIX + request.idempotencyKey();
@@ -217,4 +222,19 @@ public class WalletService {
                 message
         );
     }
+
+    private void publishEvent(Transaction txn) {
+    TransactionEvent event = new TransactionEvent(
+        java.util.UUID.randomUUID().toString(),
+        txn.getIdempotencyKey(),
+        txn.getWallet().getUserId(),
+        txn.getType(),
+        txn.getAmount(),
+        txn.getBalanceBefore(),
+        txn.getBalanceAfter(),
+        txn.getStatus(),
+        LocalDateTime.now()
+    );
+    kafkaProducerService.publishTransactionEvent(event);
+}
 }
